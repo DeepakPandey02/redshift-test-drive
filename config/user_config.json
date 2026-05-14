@@ -16,7 +16,7 @@
   "CONFIGURATIONS": [
     {
       "TYPE": "Provisioned",
-      "NODE_TYPE": "dc2.8xlarge",
+      "NODE_TYPE": "rg.xlarge",
       "NUMBER_OF_NODES": "2",
       "WLM_CONFIG_S3_PATH": "N/A"
     },
