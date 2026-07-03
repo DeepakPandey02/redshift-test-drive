@@ -5,7 +5,6 @@ WITH queries AS
                   , date_trunc('hour', q.start_time) as             "period"
                   , q.transaction_id                 as             "xid"
                   , q.query_id                       as             "query"
-                  , q.query_text::char(50)           as             "querytxt"
                   , q.queue_time / 1000000.00        as             "queue_s"
                   , q.execution_time / 1000000.00    as             "exec_time_s"     -- This includes compile time. Differs in behavior from provisioned metric
                   , case when q.status = 'failed' then 1 else 0 end "aborted"

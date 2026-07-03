@@ -373,7 +373,11 @@ def unload(unload_location, iam_role, cluster, user, replay):
                 if "CREATE TEMP TABLE" in query:
                     query_split = query.split('\n\n')
                     try:
-                        cursor.execute(query_split[0])
+                        # The setup block may contain more than one ;-separated
+                        # statement (e.g. staging temp tables). Execute each in turn.
+                        for setup_statement in query_split[0].split(";"):
+                            if setup_statement.strip():
+                                cursor.execute(setup_statement)
 
                         unload_query = (
                             f"unload ($${query_split[1]}$$) to '{parsed_location}analysis/{replay}/raw_data/"

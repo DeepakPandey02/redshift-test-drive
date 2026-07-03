@@ -495,6 +495,39 @@ class TestReportGen(unittest.TestCase):
                     self.replay,
                 )
 
+    @patch("os.path.splitext", return_value=["query_name"])
+    @patch("os.listdir", return_value=["1.sql"])
+    @patch("core.replay.report_gen.initiate_connection")
+    def test_unload_multi_statement_setup(self, mock_init_conn, mock_listdir, mock_splitext):
+        # A setup block with two ;-separated CREATE TEMP TABLE statements should
+        # execute each statement, then UNLOAD the final block.
+        mock_cursor = MagicMock()
+        mock_connection = MagicMock()
+        mock_connection.cursor.return_value = mock_cursor
+        mock_init_conn.return_value.__enter__.return_value = mock_connection
+        setup = (
+            "CREATE TEMP TABLE a AS SELECT 1;\n"
+            "CREATE TEMP TABLE b AS SELECT 2 WHERE 1 > {{START_TIME}} AND 1 < {{END_TIME}};"
+            "\n\nSELECT * FROM b"
+        )
+        mocked_open = mock_open(read_data=setup)
+        with patch("builtins.open", mocked_open):
+            report_gen.unload(
+                {"bucket_name": "b", "prefix": "p", "url": "someloc"},
+                "somerole",
+                self.provisioned_cluster,
+                self.user,
+                self.replay,
+            )
+        executed = [c.args[0] for c in mock_cursor.execute.call_args_list]
+        self.assertTrue(any(s.strip().startswith("CREATE TEMP TABLE a") for s in executed))
+        self.assertTrue(any(s.strip().startswith("CREATE TEMP TABLE b") for s in executed))
+        self.assertTrue(any(s.strip().startswith("unload (") for s in executed))
+        # The UNLOADed statement must be the final SELECT, not a setup statement.
+        unload_stmt = next(s for s in executed if s.strip().startswith("unload ("))
+        self.assertIn("SELECT * FROM b", unload_stmt)
+        self.assertNotIn("CREATE TEMP TABLE", unload_stmt)
+
     def test_read_data_empty_df(self):
         with self.assertRaises(SystemExit):
             report_gen.read_data("sometable", pandas.DataFrame(), [], self.report)
