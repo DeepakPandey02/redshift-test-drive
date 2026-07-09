@@ -220,6 +220,66 @@ from public.redshift_config_comparison_raw;
 | 0531f3b54885afb | workgroup-ncc-64 | 2 | 3 | 0 | 100 | 718 |
 | 0531f3b54885afb | workgroup-ncc-128 | 1 | 1 | 0 | 100 | 718 |
 
+## Datashare Mode — Consumer Cluster Right-Sizing
+
+NodeConfigCompare also supports a **datashare mode** for customers who run Amazon Redshift solely as a datashare consumer or use data sharing extensively. This mode answers the question: **"For my existing consumer datashare workload, which consumer node type and count gives the best price-performance?"**
+
+### How datashare workloads differ
+
+Traditional NodeConfigCompare restores a snapshot and replays the workload, assuming data lives locally on the cluster. Datashare consumers are different:
+
+- **Data lives on the producer** — the consumer cluster accesses data through a datashare connection, not local storage.
+- **Snapshot restore is not enough** — restoring a consumer snapshot gives you the schema and local objects, but the datashare connection must be re-established on each target cluster.
+- **Database routing matters** — DDL/management operations must run on a local database (e.g. `dev`) because datashare databases don't support DDL, while replay queries connect to the datashare database.
+
+### What datashare mode does automatically
+
+When `DATASHARE_CONFIG.ENABLED` is `true` in your configuration JSON, the tool:
+
+1. **Sets up the datashare** on each target cluster after restore — granting access from the producer, dropping stale database references, and creating a fresh datashare database.
+2. **Routes operations correctly** — replay and performance test queries connect to the datashare database, while DDL, stats collection, and result population use the management database (`dev`).
+3. **Filters queries by database** — using a custom replay configuration to only replay datashare-relevant queries from the audit logs.
+
+### Limitations
+
+- **Requires an existing datashare setup** — You need a running producer cluster with an active datashare, a subscribed consumer cluster with audit logging enabled, and a consumer snapshot. This tool cannot help with greenfield "should I adopt data sharing" decisions.
+- **Only varies the consumer side** — The producer cluster is a fixed input, never resized. If the producer is the bottleneck, that cost is baked equally into every candidate configuration, which can mask consumer-side differences.
+- **Producer must be a provisioned cluster** — The datashare grant operation runs against the producer using `ClusterIdentifier`. Serverless producers are not yet supported as the datashare source.
+
+### Datashare configuration parameters
+
+Add a `DATASHARE_CONFIG` block to your configuration JSON to enable this mode:
+
+| **Parameter** | **Description** |
+|---|---|
+| ENABLED | `true` to enable datashare mode |
+| PRODUCER_CLUSTER | Cluster identifier of the producer cluster |
+| PRODUCER_NAMESPACE | UUID namespace of the producer cluster |
+| DATASHARE_NAME | Name of the datashare on the producer |
+| DATASHARE_DB_NAME | Name for the datashare database on the consumer |
+| MANAGEMENT_DATABASE | Local database for DDL operations (defaults to `dev`) |
+
+See [`configuration/config_datashare_sample.json`](configuration/config_datashare_sample.json) for a complete example.
+
+### Custom replay configuration for datashare
+
+You must provide a custom replay YAML file (via `SIMPLE_REPLAY_OVERWRITE_S3_PATH`) that filters queries by database name. See [`configuration/custom_replay_datashare.yaml`](configuration/custom_replay_datashare.yaml) for a template.
+
+Set the `filters.include.database_name` to your datashare database name (or `dev` if using the external schema pattern where queries connect to `dev` and access data through external schemas).
+
+### External schema pattern
+
+If your applications access datashare data through external schemas on `dev`:
+
+```sql
+CREATE EXTERNAL SCHEMA sales FROM REDSHIFT DATABASE 'my_datashare_db' SCHEMA 'public';
+SELECT * FROM sales.orders WHERE order_date > '2024-01-01';
+```
+
+Then set `DATABASE_NAME` to `dev` and filter on `dev` in your custom replay YAML. The external schema definitions preserved in the snapshot resolve automatically when the datashare database is recreated with the same name.
+
+---
+
 ## Access permissions and security
 To deploy this solution, you need administrator access on the AWS accounts where you plan to deploy the AWS CloudFormation resources for this solution.
 

@@ -42,6 +42,20 @@ def handler(event, context):
             database_name = user_config.get("DATABASE_NAME")
             print("Database name from user_config")
         print("Database name {}".format(database_name))
+
+        # Datashare mode: split database for replay vs management operations
+        datashare_config = user_config.get("DATASHARE_CONFIG", {})
+        if datashare_config.get("ENABLED"):
+            replay_database = database_name  # datashare DB for replay endpoint
+            mgmt_database = datashare_config.get("MANAGEMENT_DATABASE", "dev")
+            print(
+                "Datashare mode: replay_db={}, mgmt_db={}".format(
+                    replay_database, mgmt_database
+                )
+            )
+        else:
+            replay_database = database_name
+            mgmt_database = database_name
         if action == "initiate":
             what_if_timestamp = time.strftime(
                 "%Y-%m-%d-%H-%M-%S", time.localtime(time.time())
@@ -254,7 +268,7 @@ def handler(event, context):
                         cluster_identifier="N/A",
                         redshift_iam_role=system_config.get("REDSHIFT_IAM_ROLE"),
                         bucket_name=system_config.get("S3_BUCKET_NAME"),
-                        db=database_name,
+                        db=mgmt_database,
                         user=system_config.get("MASTER_USER_NAME"),
                         workgroup_name=workgroup_name,
                     )
@@ -267,7 +281,7 @@ def handler(event, context):
                         cluster_identifier=cluster_identifier,
                         redshift_iam_role=system_config.get("REDSHIFT_IAM_ROLE"),
                         bucket_name=system_config.get("S3_BUCKET_NAME"),
-                        db=database_name,
+                        db=mgmt_database,
                         user=system_config.get("MASTER_USER_NAME"),
                     )
                 }
@@ -292,7 +306,7 @@ def handler(event, context):
                     job_queue=system_config.get("JOB_QUEUE"),
                     redshift_iam_role=system_config.get("REDSHIFT_IAM_ROLE"),
                     redshift_user_name=system_config.get("MASTER_USER_NAME"),
-                    db=database_name,
+                    db=replay_database,
                     disable_result_cache=system_config.get("DISABLE_RESULT_CACHE"),
                     default_output_limit=system_config.get("DEFAULT_OUTPUT_LIMIT"),
                     max_number_of_queries=system_config.get("MAX_NUMBER_OF_QUERIES"),
@@ -330,7 +344,7 @@ def handler(event, context):
                     bucket_name=system_config.get("S3_BUCKET_NAME"),
                     redshift_user_name=system_config.get("MASTER_USER_NAME"),
                     redshift_iam_role=system_config.get("REDSHIFT_IAM_ROLE"),
-                    db=database_name,
+                    db=replay_database,
                     extract_prefix=system_config.get("EXTRACT_PREFIX"),
                     replay_prefix=system_config.get("REPLAY_PREFIX"),
                     script_prefix=system_config.get("SCRIPT_PREFIX"),
@@ -364,7 +378,7 @@ def handler(event, context):
                     cluster_identifier=cluster_identifier,
                     redshift_iam_role=system_config.get("REDSHIFT_IAM_ROLE"),
                     bucket_name=system_config.get("S3_BUCKET_NAME"),
-                    db=database_name,
+                    db=mgmt_database,
                     user=system_config.get("MASTER_USER_NAME"),
                     run_type="sync",
                     what_if_timestamp=what_if_timestamp,
@@ -391,7 +405,7 @@ def handler(event, context):
                     cluster_identifier=cluster_identifier,
                     redshift_iam_role=system_config.get("REDSHIFT_IAM_ROLE"),
                     bucket_name=system_config.get("S3_BUCKET_NAME"),
-                    db=database_name,
+                    db=mgmt_database,
                     user=system_config.get("MASTER_USER_NAME"),
                     what_if_timestamp=what_if_timestamp,
                     endpoint_type=endpoint_type,
@@ -406,6 +420,19 @@ def handler(event, context):
 
         elif action == "sql_status":
             res = {"status": sql_status(sql_id)}
+        elif action == "setup_datashare":
+            datashare_config = user_config.get("DATASHARE_CONFIG", {})
+            if datashare_config.get("ENABLED"):
+                res = {
+                    "status": setup_datashare(
+                        cluster_identifier,
+                        datashare_config,
+                        system_config.get("MASTER_USER_NAME"),
+                        endpoint_type,
+                    )
+                }
+            else:
+                res = {"status": "skipped"}
         elif action == "run_glue_crawler":
             res = {"status": run_glue_crawler(system_config.get("CRAWLER_NAME"))}
         elif action == "set_tag_resource":
@@ -618,6 +645,22 @@ def gather_comparison_stats(
         )
         print("Serverless >> script_s3_path >>" + script_s3_path)
         print("Serverless >> comparison_stats_s3_path >> " + comparison_stats_s3_path)
+        # Create external schema on management database for serverless
+        try:
+            print("Creating external schema on serverless workgroup (mgmt db)")
+            run_sql(
+                clusterid=workgroup,
+                db=db,
+                user=user,
+                script=external_schema_script,
+                with_event=False,
+                run_type="sync",
+                endpoint_type="SERVERLESS",
+                workgroup_name=workgroup,
+            )
+        except Exception as e:
+            if "already exists" not in str(e):
+                raise
         run_sql_script_from_s3(
             script_s3_path=script_s3_path,
             action=action,
@@ -1601,3 +1644,150 @@ def pause_cluster(client, auto_pause, cluster_config):
         return "initiated"
     else:
         return "auto_pause config is false, clusters will not be paused"
+
+
+def setup_datashare(cluster_identifier, datashare_config, master_username, endpoint_type):
+    """Set up datashare on a target consumer cluster (provisioned or serverless).
+
+    This handles the full datashare setup required after restoring a consumer
+    snapshot to a new target cluster:
+    1. Grants the datashare from the producer to the target cluster namespace
+    2. Drops any stale datashare database reference from the snapshot
+    3. Creates a fresh datashare database on the target
+    4. Grants usage on the datashare database
+    """
+    if not endpoint_type:
+        endpoint_type = "PROVISIONED"
+
+    producer_cluster = datashare_config["PRODUCER_CLUSTER"]
+    producer_ns = datashare_config["PRODUCER_NAMESPACE"]
+    ds_name = datashare_config["DATASHARE_NAME"]
+    ds_db = datashare_config["DATASHARE_DB_NAME"]
+    account = boto3.client("sts").get_caller_identity()["Account"]
+
+    # Get target namespace based on endpoint type
+    if endpoint_type.upper() == "SERVERLESS":
+        # For serverless, cluster_identifier is a dict with workgroup/namespace
+        if isinstance(cluster_identifier, dict):
+            workgroup_name = cluster_identifier.get("workgroup")
+            namespace_name = cluster_identifier.get("namespace")
+        else:
+            workgroup_name = cluster_identifier
+            namespace_name = cluster_identifier
+        serverless_client = boto3.client("redshift-serverless")
+        namespace_resp = serverless_client.get_namespace(namespaceName=namespace_name)
+        target_ns = namespace_resp["namespace"]["namespaceId"]
+        print(
+            f"Setting up datashare (serverless): producer={producer_cluster}, "
+            f"target_workgroup={workgroup_name}, ns={target_ns}"
+        )
+    else:
+        workgroup_name = None
+        target_ns = (
+            boto3.client("redshift")
+            .describe_clusters(ClusterIdentifier=cluster_identifier)["Clusters"][0][
+                "ClusterNamespaceArn"
+            ]
+            .split(":")[-1]
+        )
+        print(
+            f"Setting up datashare (provisioned): producer={producer_cluster}, "
+            f"target={cluster_identifier}, ns={target_ns}"
+        )
+
+    rd_client = boto3.client("redshift-data")
+
+    # 1. Grant datashare from producer to target namespace
+    # Producer grant always runs against the producer provisioned cluster
+    print(f"Granting datashare {ds_name} to namespace {target_ns}")
+    _run_datashare_sql(
+        rd_client,
+        producer_cluster,
+        "dev",
+        master_username,
+        f"GRANT USAGE ON DATASHARE {ds_name} TO NAMESPACE '{target_ns}';",
+        endpoint_type="PROVISIONED",
+        workgroup_name=None,
+    )
+
+    # 2. Drop existing datashare database if it exists (snapshot may carry stale reference)
+    print(f"Dropping existing database {ds_db} on target (if exists)")
+    try:
+        _run_datashare_sql(
+            rd_client,
+            cluster_identifier,
+            "dev",
+            master_username,
+            f"DROP DATABASE {ds_db};",
+            endpoint_type=endpoint_type,
+            workgroup_name=workgroup_name,
+        )
+    except Exception as e:
+        print(f"Drop database warning (non-fatal): {e}")
+
+    # Brief pause to allow metadata propagation after drop
+    time.sleep(5)
+
+    # 3. Create datashare database on target with correct producer reference
+    print(f"Creating database {ds_db} on target")
+    try:
+        _run_datashare_sql(
+            rd_client,
+            cluster_identifier,
+            "dev",
+            master_username,
+            f"CREATE DATABASE {ds_db} FROM DATASHARE {ds_name} "
+            f"OF ACCOUNT '{account}' NAMESPACE '{producer_ns}';",
+            endpoint_type=endpoint_type,
+            workgroup_name=workgroup_name,
+        )
+    except Exception as e:
+        if "already exists" in str(e):
+            print(f"Database {ds_db} already exists - continuing")
+        else:
+            raise
+
+    # 4. Grant usage on datashare database
+    print(f"Granting usage on {ds_db}")
+    _run_datashare_sql(
+        rd_client,
+        cluster_identifier,
+        "dev",
+        master_username,
+        f"GRANT USAGE ON DATABASE {ds_db} TO PUBLIC;",
+        endpoint_type=endpoint_type,
+        workgroup_name=workgroup_name,
+    )
+
+    print(f"Datashare setup complete on target")
+    return "completed"
+
+
+def _run_datashare_sql(rd_client, cluster_id, db, user, sql, endpoint_type, workgroup_name):
+    """Execute SQL via redshift-data API and wait for completion.
+
+    Supports both provisioned clusters (via ClusterIdentifier) and
+    serverless workgroups (via WorkgroupName).
+    """
+    if endpoint_type.upper() == "SERVERLESS":
+        wg = workgroup_name if workgroup_name else cluster_id
+        if isinstance(wg, dict):
+            wg = wg.get("workgroup", wg)
+        res = rd_client.execute_statement(
+            Database=db, Sql=sql, WorkgroupName=wg
+        )
+    else:
+        res = rd_client.execute_statement(
+            Database=db, DbUser=user, Sql=sql, ClusterIdentifier=cluster_id
+        )
+    query_id = res["Id"]
+    while True:
+        time.sleep(3)
+        desc = rd_client.describe_statement(Id=query_id)
+        status = desc["Status"]
+        if status == "FINISHED":
+            return status
+        elif status == "FAILED":
+            raise Exception(
+                f"Datashare SQL failed: {desc.get('Error', 'unknown error')}"
+            )
