@@ -1496,7 +1496,10 @@ def create_serverless_namespace(
 
     except be.ClientError as e:
         msg = e.response["Error"]["Code"]
-        status = msg
+        error_message = e.response["Error"].get("Message", "")
+        print("create_serverless_namespace error: {} - {}".format(msg, error_message))
+        print(traceback.format_exc())
+        status = "{}: {}".format(msg, error_message) if error_message else msg
         return status
 
 
@@ -1537,7 +1540,10 @@ def restore_serverless_snapshot(
 
     except be.ClientError as e:
         msg = e.response["Error"]["Code"]
-        status = msg
+        error_message = e.response["Error"].get("Message", "")
+        print("restore_serverless_snapshot error: {} - {}".format(msg, error_message))
+        print(traceback.format_exc())
+        status = "{}: {}".format(msg, error_message) if error_message else msg
     return status
 
 
@@ -1564,7 +1570,10 @@ def create_serverless_workgroup(
         status = "Initiated"
     except be.ClientError as e:
         msg = e.response["Error"]["Code"]
-        status = msg
+        error_message = e.response["Error"].get("Message", "")
+        print("create_serverless_workgroup error: {} - {}".format(msg, error_message))
+        print(traceback.format_exc())
+        status = "{}: {}".format(msg, error_message) if error_message else msg
     return status
 
 
@@ -1646,6 +1655,24 @@ def pause_cluster(client, auto_pause, cluster_config):
         return "auto_pause config is false, clusters will not be paused"
 
 
+def _validate_identifier(value, label):
+    """Validate a Redshift identifier (datashare name, database name, etc.)."""
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", value):
+        raise ValueError(
+            "Invalid {}: '{}'. Must match ^[A-Za-z_][A-Za-z0-9_]*$".format(label, value)
+        )
+
+
+def _validate_uuid(value, label):
+    """Validate a UUID string (namespace ID, etc.)."""
+    if not re.match(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        value,
+        re.IGNORECASE,
+    ):
+        raise ValueError("Invalid {}: '{}'. Must be a valid UUID.".format(label, value))
+
+
 def setup_datashare(cluster_identifier, datashare_config, master_username, endpoint_type):
     """Set up datashare on a target consumer cluster (provisioned or serverless).
 
@@ -1654,7 +1681,7 @@ def setup_datashare(cluster_identifier, datashare_config, master_username, endpo
     1. Grants the datashare from the producer to the target cluster namespace
     2. Drops any stale datashare database reference from the snapshot
     3. Creates a fresh datashare database on the target
-    4. Grants usage on the datashare database
+    4. Grants usage on the datashare database to the replay user
     """
     if not endpoint_type:
         endpoint_type = "PROVISIONED"
@@ -1664,6 +1691,11 @@ def setup_datashare(cluster_identifier, datashare_config, master_username, endpo
     ds_name = datashare_config["DATASHARE_NAME"]
     ds_db = datashare_config["DATASHARE_DB_NAME"]
     account = boto3.client("sts").get_caller_identity()["Account"]
+
+    # Validate identifiers to prevent SQL injection
+    _validate_uuid(producer_ns, "PRODUCER_NAMESPACE")
+    _validate_identifier(ds_name, "DATASHARE_NAME")
+    _validate_identifier(ds_db, "DATASHARE_DB_NAME")
 
     # Get target namespace based on endpoint type
     if endpoint_type.upper() == "SERVERLESS":
@@ -1678,8 +1710,8 @@ def setup_datashare(cluster_identifier, datashare_config, master_username, endpo
         namespace_resp = serverless_client.get_namespace(namespaceName=namespace_name)
         target_ns = namespace_resp["namespace"]["namespaceId"]
         print(
-            f"Setting up datashare (serverless): producer={producer_cluster}, "
-            f"target_workgroup={workgroup_name}, ns={target_ns}"
+            "Setting up datashare (serverless): producer={}, "
+            "target_workgroup={}, ns={}".format(producer_cluster, workgroup_name, target_ns)
         )
     else:
         workgroup_name = None
@@ -1691,75 +1723,79 @@ def setup_datashare(cluster_identifier, datashare_config, master_username, endpo
             .split(":")[-1]
         )
         print(
-            f"Setting up datashare (provisioned): producer={producer_cluster}, "
-            f"target={cluster_identifier}, ns={target_ns}"
+            "Setting up datashare (provisioned): producer={}, "
+            "target={}, ns={}".format(producer_cluster, cluster_identifier, target_ns)
         )
+
+    # Validate target namespace is a UUID (returned by AWS API)
+    _validate_uuid(target_ns, "target namespace")
 
     rd_client = boto3.client("redshift-data")
 
     # 1. Grant datashare from producer to target namespace
     # Producer grant always runs against the producer provisioned cluster
-    print(f"Granting datashare {ds_name} to namespace {target_ns}")
+    print("Granting datashare {} to namespace {}".format(ds_name, target_ns))
     _run_datashare_sql(
         rd_client,
         producer_cluster,
         "dev",
         master_username,
-        f"GRANT USAGE ON DATASHARE {ds_name} TO NAMESPACE '{target_ns}';",
+        "GRANT USAGE ON DATASHARE {} TO NAMESPACE '{}';".format(ds_name, target_ns),
         endpoint_type="PROVISIONED",
         workgroup_name=None,
     )
 
     # 2. Drop existing datashare database if it exists (snapshot may carry stale reference)
-    print(f"Dropping existing database {ds_db} on target (if exists)")
+    print("Dropping existing database {} on target (if exists)".format(ds_db))
     try:
         _run_datashare_sql(
             rd_client,
             cluster_identifier,
             "dev",
             master_username,
-            f"DROP DATABASE {ds_db};",
+            "DROP DATABASE {};".format(ds_db),
             endpoint_type=endpoint_type,
             workgroup_name=workgroup_name,
         )
     except Exception as e:
-        print(f"Drop database warning (non-fatal): {e}")
+        print("Drop database warning (non-fatal): {}".format(e))
 
     # Brief pause to allow metadata propagation after drop
     time.sleep(5)
 
     # 3. Create datashare database on target with correct producer reference
-    print(f"Creating database {ds_db} on target")
+    print("Creating database {} on target".format(ds_db))
     try:
         _run_datashare_sql(
             rd_client,
             cluster_identifier,
             "dev",
             master_username,
-            f"CREATE DATABASE {ds_db} FROM DATASHARE {ds_name} "
-            f"OF ACCOUNT '{account}' NAMESPACE '{producer_ns}';",
+            "CREATE DATABASE {} FROM DATASHARE {} OF ACCOUNT '{}' NAMESPACE '{}';".format(
+                ds_db, ds_name, account, producer_ns
+            ),
             endpoint_type=endpoint_type,
             workgroup_name=workgroup_name,
         )
     except Exception as e:
         if "already exists" in str(e):
-            print(f"Database {ds_db} already exists - continuing")
+            print("Database {} already exists - continuing".format(ds_db))
         else:
             raise
 
-    # 4. Grant usage on datashare database
-    print(f"Granting usage on {ds_db}")
+    # 4. Grant usage on datashare database to the replay user (least privilege)
+    print("Granting usage on {} to {}".format(ds_db, master_username))
     _run_datashare_sql(
         rd_client,
         cluster_identifier,
         "dev",
         master_username,
-        f"GRANT USAGE ON DATABASE {ds_db} TO PUBLIC;",
+        'GRANT USAGE ON DATABASE {} TO "{}";'.format(ds_db, master_username),
         endpoint_type=endpoint_type,
         workgroup_name=workgroup_name,
     )
 
-    print(f"Datashare setup complete on target")
+    print("Datashare setup complete on target")
     return "completed"
 
 
@@ -1789,5 +1825,5 @@ def _run_datashare_sql(rd_client, cluster_id, db, user, sql, endpoint_type, work
             return status
         elif status == "FAILED":
             raise Exception(
-                f"Datashare SQL failed: {desc.get('Error', 'unknown error')}"
+                "Datashare SQL failed: {}".format(desc.get("Error", "unknown error"))
             )

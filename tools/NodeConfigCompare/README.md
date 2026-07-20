@@ -245,6 +245,7 @@ When `DATASHARE_CONFIG.ENABLED` is `true` in your configuration JSON, the tool:
 - **Requires an existing datashare setup** — You need a running producer cluster with an active datashare, a subscribed consumer cluster with audit logging enabled, and a consumer snapshot. This tool cannot help with greenfield "should I adopt data sharing" decisions.
 - **Only varies the consumer side** — The producer cluster is a fixed input, never resized. If the producer is the bottleneck, that cost is baked equally into every candidate configuration, which can mask consumer-side differences.
 - **Producer must be a provisioned cluster** — The datashare grant operation runs against the producer using `ClusterIdentifier`. Serverless producers are not yet supported as the datashare source.
+- **Producer and consumer must be in the same AWS account** — The producer account is derived from the caller's STS identity. Cross-account datashare setups are not supported.
 
 ### Datashare configuration parameters
 
