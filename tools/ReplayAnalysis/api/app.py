@@ -56,7 +56,7 @@ def request_s3_data(filename, should_error_if_missing):
                 Bucket=replay["bucket"],
                 Key=f"{replay['s3_prefix']}raw_data/{filename}",
             )
-            temp = pd.read_csv(response.get("Body")).fillna(0)
+            temp = pd.read_csv(response.get("Body"), encoding_errors="replace").fillna(0)
         except Exception as e:
             if should_error_if_missing:
                 print(
@@ -445,7 +445,7 @@ def err_distribution():
         except Exception as e:
             continue
         try:
-            df = pd.read_csv(response.get("Body")).fillna(0)
+            df = pd.read_csv(response.get("Body"), encoding_errors="replace").fillna(0)
         except EmptyDataError:
             df = pd.DataFrame()
 

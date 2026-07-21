@@ -429,7 +429,9 @@ def get_raw_data(report, bucket, replay_path, query):
     except Exception as e:
         logger.error(f"Unable to get raw data from S3. Results for {query} not found. {e}")
         exit(-1)
-    df = pd.read_csv(response.get("Body")).fillna(0)
+    # UNLOAD preserves bytes, so query_text may be non-UTF-8 (e.g. latin-1);
+    # decode tolerantly so the read-back does not crash.
+    df = pd.read_csv(response.get("Body"), encoding_errors="replace").fillna(0)
     logger.debug(f"Parsing results from '{query}' query.")
     if query == "latency_distribution":
         report.feature_graph = df
