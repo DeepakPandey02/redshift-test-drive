@@ -540,6 +540,7 @@ Resources:
               - !Sub "arn:aws:redshift-serverless:${AWS::Region}:${AWS::AccountId}:managedvpcendpoint/*"
               - !Sub "arn:aws:redshift-serverless:${AWS::Region}:${AWS::AccountId}:recovery-point/*"
               - !Sub "arn:aws:redshift-serverless:${AWS::Region}:${AWS::AccountId}:snapshot/*"
+              - !Sub "arn:aws:redshift:${AWS::Region}:${AWS::AccountId}:snapshot:*/*"
               - !Sub "arn:aws:redshift:${AWS::Region}:${AWS::AccountId}:dbuser:*"
               - !Sub "arn:aws:redshift:${AWS::Region}:${AWS::AccountId}:dbgroup:*"
               - !Sub "arn:aws:redshift:${AWS::Region}:${AWS::AccountId}:dbname:*"
