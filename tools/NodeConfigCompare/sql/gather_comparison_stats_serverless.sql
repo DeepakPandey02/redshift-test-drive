@@ -1,7 +1,23 @@
 unload ($$
-select a.user_id,a.query_id,a.query_label,a.transaction_id,a.session_id,a.database_name,a.query_type,a.status,a.result_cache_hit,a.start_time,a.end_time,a.elapsed_time,a.queue_time,a.execution_time,a.error_message,a.returned_rows,a.returned_bytes,a.query_text,a.redshift_version,a.usage_limit,a.compute_type,a.compile_time,a.planning_time,a.lock_wait_time,a.service_class_id,a.service_class_name,a.query_priority,a.short_query_accelerated,a.user_query_hash,a.generic_query_hash,a.query_hash_version,a.result_cache_query_id,Trim(u.usename) as username from sys_query_history a , pg_user u
-where a.user_id = u.usesysid
-and a.start_time > to_timestamp('{what_if_timestamp}','YYYY-MM-DD-HH24-MI-SS')
+select a.user_id,
+       a.query_id,
+       a.query_label,
+       a.transaction_id,
+       a.session_id,
+       a.database_name,
+       a.status,
+       a.result_cache_hit,
+       a.start_time,
+       a.end_time,
+       a.elapsed_time,
+       a.queue_time,
+       a.execution_time,
+       a.error_message,
+       a.query_text,
+       trim(u.usename) as username
+from sys_query_history a
+join pg_user u on a.user_id = u.usesysid
+where a.start_time > to_timestamp('{what_if_timestamp}','YYYY-MM-DD-HH24-MI-SS')
 $$) to '{comparison_stats_s3_path}/{what_if_timestamp}/{cluster_identifier}/'
 FORMAT AS PARQUET ALLOWOVERWRITE iam_role '{redshift_iam_role}';
 
