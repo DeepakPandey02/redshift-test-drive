@@ -220,9 +220,11 @@ from public.redshift_config_comparison_raw;
 | 0531f3b54885afb | workgroup-ncc-64 | 2 | 3 | 0 | 100 | 718 |
 | 0531f3b54885afb | workgroup-ncc-128 | 1 | 1 | 0 | 100 | 718 |
 
-## Datashare Mode — Consumer Cluster Right-Sizing
+## Datashare Mode — Consumer Configuration Comparison
 
-NodeConfigCompare also supports a **datashare mode** for customers who run Amazon Redshift solely as a datashare consumer or use data sharing extensively. This mode answers the question: **"For my existing consumer datashare workload, which consumer node type and count gives the best price-performance?"**
+NodeConfigCompare also supports a **datashare mode** for customers who run Amazon Redshift solely as a datashare consumer or use data sharing extensively. This mode lets you **replay your existing consumer datashare workload across multiple candidate consumer configurations and compare their benchmark results side by side.**
+
+The tool does not recommend or select a configuration for you. It replays the same workload on each candidate consumer cluster and reports comparative performance and cost metrics (total/mean/percentile query times and per-configuration cost). You review the benchmark output and decide which configuration best fits your price/performance needs.
 
 ### How datashare workloads differ
 
@@ -243,7 +245,7 @@ When `DATASHARE_CONFIG.ENABLED` is `true` in your configuration JSON, the tool:
 ### Limitations
 
 - **Requires an existing datashare setup** — You need a running producer cluster with an active datashare, a subscribed consumer cluster with audit logging enabled, and a consumer snapshot. This tool cannot help with greenfield "should I adopt data sharing" decisions.
-- **Only varies the consumer side** — The producer cluster is a fixed input, never resized. If the producer is the bottleneck, that cost is baked equally into every candidate configuration, which can mask consumer-side differences.
+- **Only varies the consumer side** — The producer cluster is a fixed input, never changed. If the producer is the bottleneck, that cost is present equally in every candidate configuration, which can mask consumer-side differences in the comparison.
 - **Producer must be a provisioned cluster** — The datashare grant operation runs against the producer using `ClusterIdentifier`. Serverless producers are not yet supported as the datashare source.
 - **Producer and consumer must be in the same AWS account** — The producer account is derived from the caller's STS identity. Cross-account datashare setups are not supported.
 
