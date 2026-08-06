@@ -248,6 +248,25 @@ with no schema binding;
 
 
 unload ($$
-select * from public.redshift_detailed_query_stats where starttime > to_timestamp('{what_if_timestamp}','YYYY-MM-DD-HH24-MI-SS')
+select queue,
+       username,
+       cc_scaling,
+       aborted,
+       queue_time,
+       compile_time,
+       exec_time,
+       total_query_time,
+       userid,
+       query,
+       query_label,
+       xid,
+       pid,
+       service_class,
+       starttime,
+       endtime,
+       tables_scanned,
+       querytxt,
+       query_hash
+from public.redshift_detailed_query_stats where starttime > to_timestamp('{what_if_timestamp}','YYYY-MM-DD-HH24-MI-SS')
 $$) to '{comparison_stats_s3_path}/{what_if_timestamp}/{cluster_identifier}/'
 FORMAT AS PARQUET ALLOWOVERWRITE iam_role '{redshift_iam_role}';
