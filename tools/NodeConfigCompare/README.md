@@ -260,7 +260,9 @@ Add a `DATASHARE_CONFIG` block to your configuration JSON to enable this mode:
 | PRODUCER_NAMESPACE | UUID namespace of the producer cluster |
 | DATASHARE_NAME | Name of the datashare on the producer |
 | DATASHARE_DB_NAME | Name for the datashare database on the consumer |
-| MANAGEMENT_DATABASE | Local database for DDL operations (defaults to `dev`) |
+| MANAGEMENT_DATABASE | Consumer-side database used for DDL, stats collection, and result population (optional, defaults to `dev`) |
+
+`MANAGEMENT_DATABASE` applies to the **consumer** target cluster and must be a database that exists on the restored consumer snapshot (`dev` is always present, so the default is safe). The one-time datashare grant issued on the **producer** always connects through `dev`, which is guaranteed to exist and is sufficient because the grant resolves the datashare by name regardless of the connection database.
 
 See [`configuration/config_datashare_sample.json`](configuration/config_datashare_sample.json) for a complete example.
 

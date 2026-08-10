@@ -1692,6 +1692,10 @@ def setup_datashare(cluster_identifier, datashare_config, master_username, endpo
     producer_ns = datashare_config["PRODUCER_NAMESPACE"]
     ds_name = datashare_config["DATASHARE_NAME"]
     ds_db = datashare_config["DATASHARE_DB_NAME"]
+    # Consumer-side DDL connects through the configured management database.
+    # Defaults to "dev", which always exists on any provisioned cluster or
+    # serverless namespace, so the default path is always safe.
+    mgmt_database = datashare_config.get("MANAGEMENT_DATABASE", "dev")
     account = boto3.client("sts").get_caller_identity()["Account"]
 
     # Validate identifiers to prevent SQL injection
@@ -1734,8 +1738,12 @@ def setup_datashare(cluster_identifier, datashare_config, master_username, endpo
 
     rd_client = boto3.client("redshift-data")
 
-    # 1. Grant datashare from producer to target namespace
-    # Producer grant always runs against the producer provisioned cluster
+    # 1. Grant datashare from producer to target namespace.
+    # Runs against the producer through "dev": the grant resolves the datashare
+    # by name (cluster-wide), so the connection database does not matter, and
+    # "dev" is guaranteed to exist on any cluster. MANAGEMENT_DATABASE is not
+    # used here because it names the consumer's DB and may not exist on the
+    # producer.
     print("Granting datashare {} to namespace {}".format(ds_name, target_ns))
     _run_datashare_sql(
         rd_client,
@@ -1753,7 +1761,7 @@ def setup_datashare(cluster_identifier, datashare_config, master_username, endpo
         _run_datashare_sql(
             rd_client,
             cluster_identifier,
-            "dev",
+            mgmt_database,
             master_username,
             "DROP DATABASE {};".format(ds_db),
             endpoint_type=endpoint_type,
@@ -1771,7 +1779,7 @@ def setup_datashare(cluster_identifier, datashare_config, master_username, endpo
         _run_datashare_sql(
             rd_client,
             cluster_identifier,
-            "dev",
+            mgmt_database,
             master_username,
             "CREATE DATABASE {} FROM DATASHARE {} OF ACCOUNT '{}' NAMESPACE '{}';".format(
                 ds_db, ds_name, account, producer_ns
@@ -1790,7 +1798,7 @@ def setup_datashare(cluster_identifier, datashare_config, master_username, endpo
     _run_datashare_sql(
         rd_client,
         cluster_identifier,
-        "dev",
+        mgmt_database,
         master_username,
         'GRANT USAGE ON DATABASE {} TO "{}";'.format(ds_db, master_username),
         endpoint_type=endpoint_type,
